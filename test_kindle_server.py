@@ -43,6 +43,12 @@ class RenderTest(unittest.TestCase):
         page = ks.render_page(None, 'tok', 60, now=NOW)
         self.assertIn('初回データを収集しています', page)
 
+    def test_image_mode_has_no_refresh_and_keeps_status_bar_blank(self):
+        page = ks.render_page(SAMPLE, '', 0, now=NOW, image_side='right')
+        self.assertNotIn('http-equiv="refresh"', page)
+        self.assertIn('padding-right', page)
+        self.assertIn('電源ボタンで終了', page)
+
     def test_remaining_past(self):
         self.assertEqual(ks.remaining('2026-10-25T11:00:00+00:00', NOW), 'リセット済み')
 
@@ -74,6 +80,19 @@ class AuthTest(unittest.TestCase):
                 body = self.get(path).read().decode()
                 self.assertIn('Codex', body)
                 self.assertIn('/t/secret-token', body)
+
+    def test_image_endpoint(self):
+        with mock.patch.object(ks, '_image', None):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get('/img/secret-token.png')
+            self.assertEqual(ctx.exception.code, 503)
+        with mock.patch.object(ks, '_image', b'\x89PNG fake'):
+            response = self.get('/img/secret-token.png')
+            self.assertEqual(response.headers['Content-Type'], 'image/png')
+            self.assertEqual(response.read(), b'\x89PNG fake')
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get('/img/wrong.png')
+            self.assertEqual(ctx.exception.code, 403)
 
     def test_rejects_wrong_path_token(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:

@@ -51,6 +51,10 @@ def url():
     return 'http://%s:%d/t/%s' % (lan_ip(), PORT, token)
 
 
+def image_url():
+    return url().replace('/t/', '/img/', 1) + '.png'
+
+
 def start():
     if running_pid() and healthy():
         print('Already running')
@@ -91,11 +95,11 @@ def install():
         print('Kindle が見つかりません（%s）。USB で接続してください。' % KINDLE_DOCS, file=sys.stderr)
         return 1
     for src in sorted((ROOT / 'kindle').glob('*.sh')):
-        text = src.read_text().replace('__URL__', url())
+        text = src.read_text().replace('__IMAGE_URL__', image_url()).replace('__URL__', url())
         # The Kindle shell needs LF line endings.
         (KINDLE_DOCS / src.name).write_bytes(text.replace('\r\n', '\n').encode())
         print('Installed: ' + src.name)
-    print('Kindle を取り出してから、ライブラリの「AI Monitor - Start」をタップしてください。')
+    print('Kindle を取り出してから、ライブラリの「AI Monitor - Start」をタップしてください。電源ボタンで終了します。')
     return 0
 
 

@@ -11,6 +11,9 @@ import hmac
 import html
 import os
 import secrets
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -30,6 +33,15 @@ STATES = {'running': '起動中', 'started': '起動中', 'active': '処理中',
           'waiting': '待機中', 'recent': '最近活動', 'stopped': '停止', 'unknown': '不明'}
 WEEKDAYS = '月火水木金土日'
 MAX_AGENTS = 8
+CHROME = os.environ.get('KINDLE_CHROME', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
+GRAY_PROFILE = '/System/Library/ColorSync/Profiles/Generic Gray Profile.icc'
+# Kindle Paperwhite 4 panel, portrait. The dashboard is drawn landscape and rotated.
+SCREEN_W, SCREEN_H = 1072, 1448
+SCALE = 1.65
+# The Kindle status bar (clock, battery) keeps redrawing the top of the portrait
+# screen, so that strip of the image is left blank.
+STATUS_BAR = 70
+_image = None
 
 
 def load_token():
@@ -43,8 +55,8 @@ def load_token():
     return token
 
 
-def refresh_loop(interval):
-    global _snapshot, _error
+def refresh_loop(interval, rotate):
+    global _snapshot, _error, _image
     from collectors import collect
     while True:
         try:
@@ -55,7 +67,37 @@ def refresh_loop(interval):
         except Exception:
             with _lock:
                 _error = '情報の取得に失敗しました。次回の更新で再試行します。'
+        try:
+            png = render_image(current_status(), rotate)
+            with _lock:
+                _image = png
+        except (OSError, subprocess.SubprocessError) as exc:
+            print('image render failed: %s' % exc, flush=True)
         time.sleep(interval)
+
+
+def render_image(data, rotate):
+    """Screenshot the image-mode page with headless Chrome, rotate it for a
+    landscape Kindle and convert it to 8-bit grayscale for eips."""
+    if not os.path.exists(CHROME):
+        raise OSError('Chrome not found: ' + CHROME)
+    width, height = round(SCREEN_H / SCALE), round(SCREEN_W / SCALE)
+    with tempfile.TemporaryDirectory(prefix='kindle_aimonitor_') as tmp:
+        page, shot = os.path.join(tmp, 'dash.html'), os.path.join(tmp, 'dash.png')
+        with open(page, 'w', encoding='utf-8') as f:
+            f.write(render_page(data, '', 0, image_side='right' if rotate == 270 else 'left'))
+        subprocess.run([CHROME, '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run',
+                        '--user-data-dir=' + os.path.join(tmp, 'profile'),
+                        '--window-size=%d,%d' % (width, height), '--force-device-scale-factor=%s' % SCALE,
+                        '--screenshot=' + shot, 'file://' + page],
+                       check=True, capture_output=True, timeout=60)
+        subprocess.run(['sips', '-r', str(rotate), '-m', GRAY_PROFILE, shot],
+                       check=True, capture_output=True, timeout=30)
+        # Chrome may round the size by a pixel; eips wants the exact panel size.
+        subprocess.run(['sips', '-z', str(SCREEN_H), str(SCREEN_W), shot],
+                       check=True, capture_output=True, timeout=30)
+        with open(shot, 'rb') as f:
+            return f.read()
 
 
 def current_status():
@@ -156,7 +198,9 @@ def render_agents(agents):
     return '<table class="agents"><tr><th>サービス</th><th>ディレクトリ</th><th>モデル</th><th>状態</th></tr>%s</table>%s' % (''.join(rows), tail)
 
 
-def render_page(data, token, refresh, now=None):
+def render_page(data, token, refresh, now=None, image_side=None):
+    """HTML for the browser, or (image_side='left'/'right') for the eips image,
+    where that side is kept blank for the Kindle status bar."""
     now = now or datetime.now(timezone.utc)
     local = now.astimezone()
     date = '%d月%d日(%s)' % (local.month, local.day, WEEKDAYS[local.weekday()])
@@ -177,13 +221,19 @@ def render_page(data, token, refresh, now=None):
         agents = data.get('agents') or []
         body.append('<h2>エージェント <span class="count">%d件</span></h2>%s' % (len(agents), render_agents(agents)))
     updated = hhmm(data.get('generatedAt')) if data else '—'
-    return PAGE % {'refresh': refresh, 'link': link, 'date': date, 'now': local.strftime('%H:%M'),
-                   'updated': updated, 'body': ''.join(body)}
+    if image_side:
+        head = '<style>body{padding-%s:%dpx !important}</style>' % (image_side, round(STATUS_BAR / SCALE) + 12)
+        foot = '収集 %s ・ 1分ごとに更新 ・ 電源ボタンで終了' % updated
+    else:
+        head = '<meta http-equiv="refresh" content="%d;url=%s">' % (refresh, link)
+        foot = '収集 %s ・ %d秒ごとに自動更新 ・ 時刻をタップで再読込' % (updated, refresh)
+    return PAGE % {'head': head, 'link': link, 'date': date, 'now': local.strftime('%H:%M'),
+                   'foot': foot, 'body': ''.join(body)}
 
 
 PAGE = '''<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="%(refresh)d;url=%(link)s">
+%(head)s
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AI Monitor</title>
 <style>
@@ -231,7 +281,7 @@ h2{font-size:19px;margin:4px 4px 4px;border-bottom:2px solid #000;padding-bottom
 <table class="top"><tr><td class="date">%(date)s</td><td class="title">AI MONITOR</td>
 <td class="upd"><a href="%(link)s">%(now)s 更新</a></td></tr></table>
 %(body)s
-<div class="foot">収集 %(updated)s ・ %(refresh)d秒ごとに自動更新 ・ 時刻をタップで再読込</div>
+<div class="foot">%(foot)s</div>
 </body></html>
 '''
 
@@ -246,6 +296,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(b'ok', 'text/plain')
         # The token goes in the path (/t/<token>): the Kindle's app:// launcher
         # mangles URLs that carry their own query string. ?k= stays for old bookmarks.
+        if url.path.startswith('/img/') and url.path.endswith('.png'):
+            if not hmac.compare_digest(url.path[5:-4].encode(), self.token.encode()):
+                return self.send_error(403, 'token required')
+            with _lock:
+                png = _image
+            if png is None:
+                return self.send_error(503, 'image not ready')
+            return self.respond(png, 'image/png')
         if url.path.startswith('/t/'):
             given = url.path[3:]
         elif url.path in ('/', '/index.html'):
@@ -276,11 +334,13 @@ def main():
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8766)
     parser.add_argument('--refresh', type=int, default=60, help='収集と画面更新の秒数')
+    parser.add_argument('--rotate', type=int, choices=(90, 270), default=270,
+                        help='画像の回転。270=kindleロゴが左、90=ロゴが右')
     args = parser.parse_args()
     Handler.token = load_token()
     Handler.refresh = max(15, args.refresh)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    threading.Thread(target=refresh_loop, args=(Handler.refresh,), daemon=True).start()
+    threading.Thread(target=refresh_loop, args=(Handler.refresh, args.rotate), daemon=True).start()
     print('Kindle view on port %d (started %s)' % (args.port, time.strftime('%H:%M:%S')), flush=True)
     try:
         server.serve_forever()
