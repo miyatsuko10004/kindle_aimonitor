@@ -23,25 +23,25 @@ SAMPLE = {
 
 class RenderTest(unittest.TestCase):
     def test_renders_quota_and_reset(self):
-        page = ks.render_page(SAMPLE, None, 'tok', 60, now=NOW)
+        page = ks.render_page(SAMPLE, 'tok', 60, now=NOW)
         self.assertIn('42%', page)
         self.assertIn('あと2時間31分', page)
         self.assertIn('HTTP 401', page)
         self.assertNotIn('<script', page)
 
     def test_hides_full_path(self):
-        page = ks.render_page(SAMPLE, None, 'tok', 60, now=NOW)
+        page = ks.render_page(SAMPLE, 'tok', 60, now=NOW)
         self.assertIn('project-x', page)
         self.assertNotIn('/Users/someone', page)
 
     def test_escapes_html(self):
         data = dict(SAMPLE, agents=[{'provider': 'codex', 'model': '<b>x</b>', 'status': 'idle'}])
-        page = ks.render_page(data, None, 'tok', 60, now=NOW)
+        page = ks.render_page(data, 'tok', 60, now=NOW)
         self.assertNotIn('<b>x</b>', page)
 
-    def test_source_down_message(self):
-        page = ks.render_page(None, OSError('refused'), 'tok', 60, now=NOW)
-        self.assertIn('aimonitor start', page)
+    def test_loading_message_before_first_collect(self):
+        page = ks.render_page(None, 'tok', 60, now=NOW)
+        self.assertIn('初回データを収集しています', page)
 
     def test_remaining_past(self):
         self.assertEqual(ks.remaining('2026-10-25T11:00:00+00:00', NOW), 'リセット済み')
@@ -69,7 +69,7 @@ class AuthTest(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 403)
 
     def test_serves_with_token(self):
-        with mock.patch.object(ks, 'fetch_status', return_value=SAMPLE):
+        with mock.patch.object(ks, 'current_status', return_value=SAMPLE):
             body = self.get('/?k=secret-token').read().decode()
         self.assertIn('Codex', body)
 

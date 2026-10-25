@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""E-ink friendly view of aimonitor for an old Kindle on the LAN.
+"""E-ink friendly AI agent usage dashboard for an old Kindle on the LAN.
 
-Reads the existing dashboard API (http://127.0.0.1:8765/api/status) and renders
-plain server-side HTML: no JavaScript, no gradients, black and white only, so the
-Kindle "Experimental Browser" (old WebKit) can show it. Access needs a token.
+Collects subscription usage and local agent sessions itself (collectors.py) and
+renders plain server-side HTML: no JavaScript, no gradients, black and white only,
+so the Kindle "Experimental Browser" (old WebKit) can show it. Access needs a token.
 No third-party dependencies.
 """
 import argparse
 import hmac
 import html
-import json
 import os
 import secrets
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -21,8 +21,10 @@ from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent
 TOKEN_FILE = ROOT / '.kindle_token'
-SOURCE = 'http://127.0.0.1:8765/api/status'
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_lock = threading.Lock()
+_snapshot = None
+_error = None
 NAMES = {'codex': 'Codex', 'claude': 'Claude Code', 'claude-code': 'Claude Code', 'antigravity': 'Antigravity'}
 STATES = {'running': '起動中', 'started': '起動中', 'active': '処理中', 'busy': '処理中', 'idle': '待機中',
           'waiting': '待機中', 'recent': '最近活動', 'stopped': '停止', 'unknown': '不明'}
@@ -41,9 +43,27 @@ def load_token():
     return token
 
 
-def fetch_status():
-    with OPENER.open(SOURCE, timeout=3) as response:
-        return json.load(response)
+def refresh_loop(interval):
+    global _snapshot, _error
+    from collectors import collect
+    while True:
+        try:
+            data = collect()
+            data['generatedAt'] = datetime.now(timezone.utc).isoformat()
+            with _lock:
+                _snapshot, _error = data, None
+        except Exception:
+            with _lock:
+                _error = '情報の取得に失敗しました。次回の更新で再試行します。'
+        time.sleep(interval)
+
+
+def current_status():
+    with _lock:
+        data = dict(_snapshot) if _snapshot else None
+        if data is not None and _error:
+            data['error'] = _error
+        return data
 
 
 def parse_time(value):
@@ -136,15 +156,15 @@ def render_agents(agents):
     return '<table class="agents"><tr><th>サービス</th><th>ディレクトリ</th><th>モデル</th><th>状態</th></tr>%s</table>%s' % (''.join(rows), tail)
 
 
-def render_page(data, error, token, refresh, now=None):
+def render_page(data, token, refresh, now=None):
     now = now or datetime.now(timezone.utc)
     local = now.astimezone()
     date = '%d月%d日(%s)' % (local.month, local.day, WEEKDAYS[local.weekday()])
     link = '/?k=' + esc(token)
     body = []
-    if error:
-        body.append('<div class="alert">aimonitor に接続できません。Mac で <b>aimonitor start</b> を実行してください。</div>')
-    if data:
+    if not data:
+        body.append('<div class="alert">初回データを収集しています。しばらくお待ちください。</div>')
+    else:
         if data.get('error'):
             body.append('<div class="alert">%s</div>' % esc(data['error']))
         providers = {p.get('id'): p for p in data.get('providers') or []}
@@ -229,12 +249,7 @@ class Handler(BaseHTTPRequestHandler):
         given = (parse_qs(url.query).get('k') or [''])[0]
         if not hmac.compare_digest(given.encode(), self.token.encode()):
             return self.send_error(403, 'token required')
-        data, error = None, None
-        try:
-            data = fetch_status()
-        except (OSError, ValueError) as exc:
-            error = exc
-        page = render_page(data, error, self.token, self.refresh)
+        page = render_page(current_status(), self.token, self.refresh)
         self.respond(page.encode('utf-8'), 'text/html; charset=utf-8')
 
     def respond(self, body, content_type):
@@ -252,14 +267,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Kindle向けaimonitorビュー')
+    parser = argparse.ArgumentParser(description='Kindle向けAIエージェント利用状況ダッシュボード')
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8766)
-    parser.add_argument('--refresh', type=int, default=60, help='自動更新の秒数')
+    parser.add_argument('--refresh', type=int, default=60, help='収集と画面更新の秒数')
     args = parser.parse_args()
     Handler.token = load_token()
     Handler.refresh = max(15, args.refresh)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    threading.Thread(target=refresh_loop, args=(Handler.refresh,), daemon=True).start()
     print('Kindle view on port %d (started %s)' % (args.port, time.strftime('%H:%M:%S')), flush=True)
     try:
         server.serve_forever()
