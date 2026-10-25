@@ -144,7 +144,7 @@ def codex():
         a = read_json(HOME / '.codex/auth.json')['tokens']
         d = request_json('https://chatgpt.com/backend-api/wham/usage', {
             'Authorization': 'Bearer ' + a['access_token'], 'ChatGPT-Account-Id': a['account_id'],
-            'User-Agent': 'agent-dashboard/1.0'})
+            'User-Agent': 'kindle_aimonitor/1.0'})
         limits = d.get('rate_limit') or {}
         for key, name in [('primary_window', '5時間'), ('secondary_window', '週間')]:
             v = limits.get(key)
@@ -215,7 +215,7 @@ def claude():
         token = a['claudeAiOauth']['accessToken']
         d = request_json('https://api.anthropic.com/api/oauth/usage', {
             'Authorization': 'Bearer ' + token, 'anthropic-beta': 'oauth-2025-04-20',
-            'User-Agent': 'agent-dashboard/1.0'})
+            'User-Agent': 'kindle_aimonitor/1.0'})
         for key, name in [('five_hour', '5時間'), ('seven_day', '週間'), ('seven_day_sonnet', '週間 Sonnet'), ('seven_day_opus', '週間 Opus')]:
             v = d.get(key)
             if v and v.get('utilization') is not None:
