@@ -100,7 +100,27 @@ Kindle への書き込みは遅く、数 GB を埋めるには 30 分以上か�
 rm -rf /Volumes/Kindle/fill_disk
 ```
 
-3. 公式 Wiki の「[What's Next?](https://kindlemodding.org/jailbreaking/whats-next/index.html)」に従って、必要な拡張（KUAL など）を入れます。
+3. 公式 Wiki の「[What's Next?](https://kindlemodding.org/jailbreaking/whats-next/index.html)」も確認しておきます。
+
+### 5. ダッシュボードを常時表示する
+
+脱獄済みの Kindle では、ライブラリに置いたシェルスクリプト（[スクリプトレット](https://kindlemodding.org/kindle-dev/scriptlets.html)）をタップで実行できます。このリポジトリの `kindle/` に、常時表示用のスクリプトレットを用意しています。
+
+```sh
+./kindlemon start      # サーバーを起動（トークンが生成される）
+./kindlemon install    # USB 接続中の Kindle に、URL を埋め込んだスクリプトを転送
+```
+
+Kindle を取り出して USB を抜くと、ライブラリに次の 2 つが表示されます。
+
+| 項目 | 動作 |
+|---|---|
+| AI Monitor - Start | スクリーンセーバーを止め、ブラウザでダッシュボードを開く |
+| AI Monitor - Stop | スクリーンセーバーを元に戻す |
+
+- Mac の IP アドレスやトークンが変わったら、もう一度 `./kindlemon install` を実行してください。
+- Kindle を再起動するとスクリーンセーバーは元に戻ります。再起動後は「AI Monitor - Start」をもう一度タップします。
+- 常時表示中は USB 給電しておくことをおすすめします。
 
 ## セキュリティ
 
@@ -119,4 +139,5 @@ python3 -m unittest -v
 |---|---|
 | `collectors.py` | 利用枠・セッションの読み取り専用収集 |
 | `kindle_server.py` | 収集ループと Kindle 向け HTML 配信 |
-| `kindlemon` | バックグラウンド起動・停止・URL 表示 |
+| `kindlemon` | バックグラウンド起動・停止・URL 表示・Kindle へのスクリプト転送 |
+| `kindle/*.sh` | Kindle 用スクリプトレットのテンプレート |

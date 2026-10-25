@@ -14,7 +14,8 @@ PID = ROOT / '.kindle.pid'
 LOG = ROOT / '.kindle.log'
 PORT = 8766
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-USAGE = 'Usage: kindlemon [start|stop|status|url]'
+USAGE = 'Usage: kindlemon [start|stop|status|url|install]'
+KINDLE_DOCS = Path('/Volumes/Kindle/documents')
 
 
 def running_pid():
@@ -81,9 +82,26 @@ def stop():
     return 0
 
 
+def install():
+    """Copy the scriptlets to a USB-connected, jailbroken Kindle with this Mac's URL filled in."""
+    if not (ROOT / '.kindle_token').exists():
+        print('先に kindlemon start を実行してください。', file=sys.stderr)
+        return 1
+    if not KINDLE_DOCS.is_dir():
+        print('Kindle が見つかりません（%s）。USB で接続してください。' % KINDLE_DOCS, file=sys.stderr)
+        return 1
+    for src in sorted((ROOT / 'kindle').glob('*.sh')):
+        text = src.read_text().replace('__URL__', url())
+        # The Kindle shell needs LF line endings.
+        (KINDLE_DOCS / src.name).write_bytes(text.replace('\r\n', '\n').encode())
+        print('Installed: ' + src.name)
+    print('Kindle を取り出してから、ライブラリの「AI Monitor - Start」をタップしてください。')
+    return 0
+
+
 def main(args):
     action = args[0] if args else 'start'
-    if len(args) > 1 or action not in ('start', 'stop', 'status', 'url'):
+    if len(args) > 1 or action not in ('start', 'stop', 'status', 'url', 'install'):
         print(USAGE, file=sys.stderr)
         return 2
     if action == 'start':
@@ -93,6 +111,8 @@ def main(args):
     if action == 'url':
         print(url())
         return 0
+    if action == 'install':
+        return install()
     ok = running_pid() and healthy()
     print(('Running: ' + url()) if ok else 'Not running')
     return 0 if ok else 1
