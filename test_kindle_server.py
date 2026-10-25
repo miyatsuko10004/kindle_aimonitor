@@ -49,6 +49,24 @@ class RenderTest(unittest.TestCase):
         self.assertIn('padding-right', page)
         self.assertIn('電源ボタンで終了', page)
 
+    def test_stale_quota_is_not_shown_as_current_zero(self):
+        provider = {'id': 'antigravity', 'status': 'stale',
+                    'windows': [{'name': 'Gemini', 'usedPercent': 0}]}
+        result = ks.render_provider(provider, NOW)
+        self.assertIn('現在の残量は不明', result)
+        self.assertNotIn('0%', result)
+
+    def test_antigravity_selects_highest_usage_without_averaging(self):
+        provider = {'id': 'antigravity', 'status': 'live', 'windows': [
+            {'name': 'Low', 'usedPercent': 20}, {'name': 'High', 'usedPercent': 90}]}
+        result = ks.render_provider(provider, NOW)
+        self.assertIn('gauge-value">90%', result)
+        self.assertLess(result.index('High'), result.index('Low'))
+
+    def test_nonfinite_gauge_is_unknown(self):
+        for value in (float('nan'), float('inf'), None, True):
+            self.assertIn('現在値は不明', ks.gauge(value, '5時間'))
+
     def test_remaining_past(self):
         self.assertEqual(ks.remaining('2026-10-25T11:00:00+00:00', NOW), 'リセット済み')
 

@@ -8,6 +8,7 @@ No third-party dependencies.
 """
 import argparse
 import hmac
+import math
 import html
 import os
 import secrets
@@ -148,52 +149,75 @@ def bar(percent):
     return ('<div class="track"><div class="fill" style="width:%d%%"></div></div>' % round(width))
 
 
+def valid_percent(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def gauge(percent, label):
+    valid = valid_percent(percent)
+    value = max(0, min(100, percent)) if valid else 0
+    pct = '%d%%' % round(value) if valid else '—'
+    arc = ('<circle cx="85" cy="85" r="70" fill="none" stroke="#000" stroke-width="10" '
+           'stroke-dasharray="%.2f 439.83" transform="rotate(-90 85 85)"/>' % (439.83 * value / 100)) if valid else ''
+    return ('<div class="gauge"><svg viewBox="0 0 170 170" aria-hidden="true">'
+            '<circle cx="85" cy="85" r="70" fill="none" stroke="#ccc" stroke-width="10"/>%s</svg>'
+            '<div class="gauge-text"><div class="gauge-label">%s</div><div class="gauge-value">%s</div>'
+            '<div class="gauge-label">%s</div></div></div>'
+            % (arc, esc(label), pct, '使用率' if valid else '現在値は不明'))
+
+
 def render_provider(p, now):
     name = p.get('name') or NAMES.get(p.get('id'), p.get('id') or '不明')
     status = p.get('status')
-    badge = {'live': '取得済み', 'ok': '取得済み', 'available': '取得済み', 'success': '取得済み',
-             'cached': 'キャッシュ', 'stale': '前回値'}.get(status, '取得不可')
     windows = p.get('windows') or []
-    out = ['<div class="card"><table class="head"><tr><td class="pname">%s</td>'
-           '<td class="badge">%s</td></tr></table>' % (esc(name), esc(badge))]
-    if not windows:
-        out.append('<div class="none">—</div><div class="note">%s</div>'
-                   % esc(p.get('error') or '利用枠を取得できていません'))
-        out.append('</div>')
-        return ''.join(out)
-    compact = len(windows) > 3
-    out.append('<table class="win%s">' % (' compact' if compact else ''))
-    for w in windows:
+    known = status in ('live', 'ok', 'available', 'success')
+    badge = '取得済み' if known else ('前回値' if windows else '取得不可')
+    out = ['<div class="card"><div class="pname">%s</div><div class="badge">%s</div>' % (esc(name), badge)]
+    if not windows or not known:
+        out.append(gauge(None, '利用枠'))
+        out.append('<div class="note">%s</div>' % esc('前回値のため現在の残量は不明' if windows else p.get('error') or '利用枠を取得できていません'))
+        if p.get('updatedAt'):
+            out.append('<div class="note">前回確認 %s</div>' % hhmm(p['updatedAt']))
+        return ''.join(out) + '</div>'
+    if p.get('id') == 'antigravity':
+        # 異なる利用枠を平均せず、使用率が最も高いモデルを表示する。
+        windows = sorted(windows, key=lambda w: w.get('usedPercent') if valid_percent(w.get('usedPercent')) else -1, reverse=True)
+    else:
+        windows = sorted(windows, key=lambda w: 0 if w.get('name') == '5時間' else 1)
+    primary = windows[0]
+    out.append(gauge(primary.get('usedPercent'), primary.get('name') or '利用枠'))
+    reset = remaining(primary.get('resetsAt'), now)
+    out.append('<div class="gauge-reset">%s</div>' % esc('リセット ' + reset if reset.startswith('あと') else reset))
+    if p.get('id') == 'antigravity':
+        out.append('<div class="note">使用率が高いモデルから表示</div>')
+    for w in windows[1:2]:
         used = w.get('usedPercent')
-        valid = isinstance(used, (int, float))
-        pct = '%d%%' % round(used) if valid else '—'
-        out.append('<tr><td class="wname">%s</td><td class="wbar">%s</td><td class="pct">%s</td>'
-                   '<td class="reset">%s</td></tr>'
-                   % (esc(w.get('name') or '利用枠'), bar(used) if valid else '', pct,
-                      esc(remaining(w.get('resetsAt'), now))))
-    out.append('</table>')
-    if status == 'stale':
-        out.append('<div class="note">前回確認した値です（現在の残量は不明）</div>')
-    elif p.get('error'):
+        valid = valid_percent(used)
+        pct = '%d%%' % round(max(0, min(100, used))) if valid else '—'
+        out.append('<div class="secondary"><table><tr><td class="wname">%s</td><td class="pct">%s</td></tr></table>%s'
+                   '<div class="reset">%s</div></div>'
+                   % (esc(w.get('name') or '利用枠'), pct, bar(used) if valid else '', esc(remaining(w.get('resetsAt'), now))))
+    if len(windows) > 2:
+        out.append('<div class="note">ほか %d 枠</div>' % (len(windows) - 2))
+    if p.get('error'):
         out.append('<div class="note">%s</div>' % esc(p['error']))
-    out.append('</div>')
-    return ''.join(out)
+    return ''.join(out) + '</div>'
 
 
-def render_agents(agents):
+def render_agents(agents, limit=MAX_AGENTS):
     if not agents:
         return '<div class="note">確認できるエージェントはありません</div>'
     order = {'active': 0, 'busy': 0, 'running': 1, 'started': 1, 'recent': 2}
     agents = sorted(agents, key=lambda a: order.get(a.get('status'), 3))
     rows = []
-    for a in agents[:MAX_AGENTS]:
+    for a in agents[:limit]:
         active = a.get('status') in ('active', 'busy', 'running')
         # Show only the last path component: full paths stay on the Mac.
         cwd = os.path.basename(str(a.get('cwd') or '').rstrip('/')) or '—'
         rows.append('<tr><td>%s%s</td><td>%s</td><td class="model">%s</td><td>%s</td></tr>'
                     % ('● ' if active else '○ ', esc(NAMES.get(a.get('provider'), a.get('provider') or '不明')),
                        esc(cwd), esc(a.get('model') or '不明'), esc(STATES.get(a.get('status'), a.get('status') or '不明'))))
-    more = len(agents) - MAX_AGENTS
+    more = len(agents) - limit
     tail = '<div class="note">ほか %d 件</div>' % more if more > 0 else ''
     return '<table class="agents"><tr><th>サービス</th><th>ディレクトリ</th><th>モデル</th><th>状態</th></tr>%s</table>%s' % (''.join(rows), tail)
 
@@ -215,11 +239,11 @@ def render_page(data, token, refresh, now=None, image_side=None):
         if 'claude-code' in providers and 'claude' not in providers:
             providers['claude'] = providers['claude-code']
         cards = [render_provider(providers.get(i) or {'id': i, 'name': NAMES[i]}, now)
-                 for i in ('claude', 'codex', 'antigravity')]
-        body.append('<table class="grid"><tr><td class="col">%s%s</td><td class="col">%s</td></tr></table>'
+                 for i in ('codex', 'claude', 'antigravity')]
+        body.append('<table class="grid"><tr><td class="col">%s</td><td class="col">%s</td><td class="col">%s</td></tr></table>'
                     % (cards[0], cards[1], cards[2]))
         agents = data.get('agents') or []
-        body.append('<h2>エージェント <span class="count">%d件</span></h2>%s' % (len(agents), render_agents(agents)))
+        body.append('<h2>エージェント <span class="count">%d件</span></h2>%s' % (len(agents), render_agents(agents, limit=3 if image_side else MAX_AGENTS)))
     updated = hhmm(data.get('generatedAt')) if data else '—'
     if image_side:
         head = '<style>body{padding-%s:%dpx !important}</style>' % (image_side, round(STATUS_BAR / SCALE) + 12)
@@ -239,47 +263,52 @@ PAGE = '''<!doctype html>
 <style>
 *{box-sizing:border-box;-webkit-box-sizing:border-box}
 html,body{margin:0;padding:0;background:#fff;color:#000}
-body{font-family:sans-serif;font-size:17px;padding:10px 12px}
+body{font-family:"Helvetica Neue",Arial,"Hiragino Kaku Gothic ProN",sans-serif;font-size:17px;padding:10px 18px}
 a{color:#000;text-decoration:none}
 table{border-collapse:collapse;width:100%%}
 td,th{padding:0;vertical-align:middle}
 .top{border-bottom:3px solid #000;margin-bottom:8px}
-.top td{padding:2px 0 6px}
-.date{font-size:24px;font-weight:bold}
-.title{text-align:center;font-size:15px;letter-spacing:2px}
-.upd{text-align:right;font-size:18px}
-.upd a{display:inline-block;border:2px solid #000;border-radius:6px;padding:4px 10px;font-weight:bold}
-.grid .col{vertical-align:top;width:50%%;padding:0 4px}
-.card{border:2px solid #000;border-radius:8px;padding:8px 10px;margin-bottom:8px}
-.head td{padding-bottom:4px}
-.pname{font-size:21px;font-weight:bold}
-.badge{text-align:right;font-size:13px}
-.win td{padding:5px 0}
-.wname{font-size:16px;width:24%%;white-space:nowrap}
-.wbar{padding:0 8px !important}
-.pct{font-size:28px;font-weight:bold;text-align:right;width:20%%;white-space:nowrap}
-.reset{font-size:13px;text-align:right;width:26%%;white-space:nowrap;padding-left:6px !important}
-.compact td{padding:2px 0}
-.compact .wname{font-size:12px;width:44%%;white-space:normal}
-.compact .pct{font-size:16px;width:13%%}
-.compact .reset{font-size:11px;width:22%%}
-.compact .track{height:9px}
-.track{border:2px solid #000;height:14px;border-radius:3px;background:#fff}
+.top td{padding:0 0 10px}
+.date{font-size:19px;font-weight:bold;width:32%%}
+.title{text-align:center;font-size:13px;letter-spacing:3px;font-weight:bold}
+.upd{text-align:right;width:32%%}
+.upd a{display:inline-block;font-size:34px;font-weight:bold;line-height:1;letter-spacing:-1px}
+.grid{table-layout:fixed;margin-bottom:10px}
+.grid .col{vertical-align:top;width:33.33%%;padding:0 12px;border-right:1px solid #999}
+.grid .col:first-child{padding-left:0}
+.grid .col:last-child{padding-right:0;border-right:0}
+.card{padding:3px 0}
+.pname{font-size:23px;font-weight:bold;letter-spacing:-.5px}
+.badge{font-size:11px;margin-top:4px}
+.gauge{width:140px;height:140px;position:relative;margin:8px auto}
+.gauge svg{width:140px;height:140px;display:block}
+.gauge-text{position:absolute;top:31px;left:12px;width:116px;text-align:center}
+.gauge-label{max-width:100px;margin:auto;word-wrap:break-word;font-size:11px;line-height:14px;overflow-wrap:break-word}
+.gauge-value{font-size:36px;font-weight:bold;line-height:40px;letter-spacing:-2px}
+.gauge-reset{text-align:center;font-size:12px;margin-bottom:6px}
+.secondary{margin-top:6px}
+.wname{font-size:12px;word-wrap:break-word}
+.pct{font-size:20px;font-weight:bold;text-align:right;white-space:nowrap;padding-left:6px}
+.reset{font-size:11px;text-align:right;margin-top:3px}
+.track{height:7px;background:#ccc;margin-top:4px}
 .fill{height:100%%;background:#000}
-.none{font-size:30px;font-weight:bold;padding:4px 0}
-.note{font-size:13px;margin-top:4px}
-.alert{border:3px solid #000;padding:8px;margin-bottom:8px;font-size:16px}
-h2{font-size:19px;margin:4px 4px 4px;border-bottom:2px solid #000;padding-bottom:3px}
-.count{font-size:14px;font-weight:normal}
-.agents{margin:0 4px;width:auto}
-.agents th{text-align:left;font-size:12px;font-weight:normal;border-bottom:1px solid #000;padding:2px 6px 2px 0}
-.agents td{font-size:15px;padding:4px 6px 4px 0;border-bottom:1px solid #999;word-break:break-all}
-.model{font-family:monospace;font-size:13px !important}
-.foot{margin-top:8px;font-size:12px;text-align:center}
-@media (max-width:700px){.grid .col{display:block;width:100%%;padding:0}}
+.note{font-size:11px;margin-top:5px;overflow-wrap:break-word;word-wrap:break-word}
+.alert{border:2px solid #000;padding:8px;margin-bottom:10px;font-size:15px}
+h2{font-size:17px;margin:2px 0 0;border-bottom:2px solid #000;padding:0 0 6px}
+.count{font-size:12px;font-weight:normal;margin-left:8px}
+.agents{table-layout:fixed;width:100%%}
+.agents th{text-align:left;font-size:10px;font-weight:normal;border-bottom:1px solid #000;padding:5px 6px}
+.agents th:first-child{width:21%%}
+.agents th:nth-child(2){width:29%%}
+.agents th:nth-child(3){width:36%%}
+.agents th:last-child{width:14%%}
+.agents td{font-size:12px;padding:3px 6px;border-bottom:1px solid #bbb;overflow-wrap:break-word;word-wrap:break-word}
+.model{font-family:monospace;font-size:11px !important}
+.foot{margin-top:4px;font-size:10px;text-align:right}
+@media (max-width:700px){body{padding:12px}.grid .col{display:block;width:100%%;padding:14px 0;border-right:0;border-bottom:1px solid #999}.date{font-size:15px}.title{font-size:10px;letter-spacing:1px}.upd a{font-size:28px}}
 </style></head><body>
 <table class="top"><tr><td class="date">%(date)s</td><td class="title">AI MONITOR</td>
-<td class="upd"><a href="%(link)s">%(now)s 更新</a></td></tr></table>
+<td class="upd"><a href="%(link)s">%(now)s</a></td></tr></table>
 %(body)s
 <div class="foot">%(foot)s</div>
 </body></html>
