@@ -70,8 +70,15 @@ class AuthTest(unittest.TestCase):
 
     def test_serves_with_token(self):
         with mock.patch.object(ks, 'current_status', return_value=SAMPLE):
-            body = self.get('/?k=secret-token').read().decode()
-        self.assertIn('Codex', body)
+            for path in ('/?k=secret-token', '/t/secret-token'):
+                body = self.get(path).read().decode()
+                self.assertIn('Codex', body)
+                self.assertIn('/t/secret-token', body)
+
+    def test_rejects_wrong_path_token(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.get('/t/wrong')
+        self.assertEqual(ctx.exception.code, 403)
 
 
 if __name__ == '__main__':

@@ -48,7 +48,7 @@ def lan_ip():
 def url():
     token_file = ROOT / '.kindle_token'
     token = token_file.read_text().strip() if token_file.exists() else '(未生成: 先に start)'
-    return 'http://%s:%d/?k=%s' % (lan_ip(), PORT, token)
+    return 'http://%s:%d/t/%s' % (lan_ip(), PORT, token)
 
 
 def start():

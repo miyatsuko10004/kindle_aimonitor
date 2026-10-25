@@ -160,7 +160,7 @@ def render_page(data, token, refresh, now=None):
     now = now or datetime.now(timezone.utc)
     local = now.astimezone()
     date = '%d月%d日(%s)' % (local.month, local.day, WEEKDAYS[local.weekday()])
-    link = '/?k=' + esc(token)
+    link = '/t/' + esc(token)
     body = []
     if not data:
         body.append('<div class="alert">初回データを収集しています。しばらくお待ちください。</div>')
@@ -244,9 +244,14 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         if url.path == '/health':
             return self.respond(b'ok', 'text/plain')
-        if url.path not in ('/', '/index.html'):
+        # The token goes in the path (/t/<token>): the Kindle's app:// launcher
+        # mangles URLs that carry their own query string. ?k= stays for old bookmarks.
+        if url.path.startswith('/t/'):
+            given = url.path[3:]
+        elif url.path in ('/', '/index.html'):
+            given = (parse_qs(url.query).get('k') or [''])[0]
+        else:
             return self.send_error(404)
-        given = (parse_qs(url.query).get('k') or [''])[0]
         if not hmac.compare_digest(given.encode(), self.token.encode()):
             return self.send_error(403, 'token required')
         page = render_page(current_status(), self.token, self.refresh)
