@@ -1,0 +1,5 @@
+.kindle_token
+.kindle.pid
+.kindle.log
+__pycache__/
+.DS_Store
