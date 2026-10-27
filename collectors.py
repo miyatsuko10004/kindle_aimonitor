@@ -90,10 +90,9 @@ def window(name, used, reset):
             'resetsAt': stamp(reset) if reset else None}
 
 
-def codex():
-    p = provider('Codex', 'codex')
+def codex_sessions():
+    """Local Codex threads touched in the last day: (agents, rollout paths). No network."""
     agents = []
-    rates = None
     paths = []
     db = HOME / '.codex/state_5.sqlite'
     if db.exists():
@@ -140,6 +139,13 @@ def codex():
                                'updatedAt': stamp(event_time), 'modelSource': 'session metadata', 'modelEvidence': 'セッションに記録されたモデル'})
         except (sqlite3.Error, OSError):
             pass
+    return agents, paths
+
+
+def codex():
+    p = provider('Codex', 'codex')
+    rates = None
+    agents, paths = codex_sessions()
     try:
         a = read_json(HOME / '.codex/auth.json')['tokens']
         d = request_json('https://chatgpt.com/backend-api/wham/usage', {
@@ -175,8 +181,8 @@ def codex():
     return p, agents
 
 
-def claude():
-    p = provider('Claude Code', 'claude')
+def claude_sessions():
+    """Live Claude Code sessions from the local session registry. No network."""
     agents = []
     for file in (HOME / '.claude/sessions').glob('*.json'):
         try:
@@ -204,6 +210,12 @@ def claude():
                            'updatedAt': stamp((s.get('statusUpdatedAt') or s.get('updatedAt') or file.stat().st_mtime * 1000) / 1000)})
         except (OSError, ValueError, TypeError):
             continue
+    return agents
+
+
+def claude():
+    p = provider('Claude Code', 'claude')
+    agents = claude_sessions()
     try:
         credentials = HOME / '.claude/.credentials.json'
         if credentials.exists():

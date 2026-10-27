@@ -14,7 +14,8 @@ PID = ROOT / '.kindle.pid'
 LOG = ROOT / '.kindle.log'
 PORT = 8766
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-USAGE = 'Usage: kindlemon [start|stop|status|url|install]'
+USAGE = 'Usage: kindlemon [start|stop|status|url|install [usage|agents]]'
+VIEWS = ('usage', 'agents')
 KINDLE_DOCS = Path('/Volumes/Kindle/documents')
 
 
@@ -51,8 +52,9 @@ def url():
     return 'http://%s:%d/t/%s' % (lan_ip(), PORT, token)
 
 
-def image_url():
-    return url().replace('/t/', '/img/', 1) + '.png'
+def image_url(view='usage'):
+    # usage: AI 利用枠ダッシュボード / agents: エージェント受信箱ボード
+    return url().replace('/t/', '/img/', 1) + ('/agents' if view == 'agents' else '') + '.png'
 
 
 def start():
@@ -86,7 +88,7 @@ def stop():
     return 0
 
 
-def install():
+def install(view='usage'):
     """Copy the scriptlets to a USB-connected, jailbroken Kindle with this Mac's URL filled in."""
     if not (ROOT / '.kindle_token').exists():
         print('先に kindlemon start を実行してください。', file=sys.stderr)
@@ -95,17 +97,19 @@ def install():
         print('Kindle が見つかりません（%s）。USB で接続してください。' % KINDLE_DOCS, file=sys.stderr)
         return 1
     for src in sorted((ROOT / 'kindle').glob('*.sh')):
-        text = src.read_text().replace('__IMAGE_URL__', image_url()).replace('__URL__', url())
+        text = src.read_text().replace('__IMAGE_URL__', image_url(view)).replace('__URL__', url())
         # The Kindle shell needs LF line endings.
         (KINDLE_DOCS / src.name).write_bytes(text.replace('\r\n', '\n').encode())
-        print('Installed: ' + src.name)
+        print('Installed: %s (%s)' % (src.name, view))
     print('Kindle を取り出してから、ライブラリの「AI Monitor - Start」をタップしてください。電源ボタンで終了します。')
     return 0
 
 
 def main(args):
     action = args[0] if args else 'start'
-    if len(args) > 1 or action not in ('start', 'stop', 'status', 'url', 'install'):
+    view = args[1] if len(args) > 1 else 'usage'
+    if (len(args) > 1 and action != 'install') or len(args) > 2 or view not in VIEWS \
+            or action not in ('start', 'stop', 'status', 'url', 'install'):
         print(USAGE, file=sys.stderr)
         return 2
     if action == 'start':
@@ -116,7 +120,7 @@ def main(args):
         print(url())
         return 0
     if action == 'install':
-        return install()
+        return install(view)
     ok = running_pid() and healthy()
     print(('Running: ' + url()) if ok else 'Not running')
     return 0 if ok else 1

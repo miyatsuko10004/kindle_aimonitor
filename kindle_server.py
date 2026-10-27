@@ -43,6 +43,8 @@ SCALE = 1.65
 # screen, so that strip of the image is left blank.
 STATUS_BAR = 70
 _image = None
+_board = None
+_board_image = None
 
 
 def load_token():
@@ -57,8 +59,9 @@ def load_token():
 
 
 def refresh_loop(interval, rotate):
-    global _snapshot, _error, _image
+    global _snapshot, _error, _image, _board, _board_image
     from collectors import collect
+    import agents_board
     while True:
         try:
             data = collect()
@@ -74,19 +77,36 @@ def refresh_loop(interval, rotate):
                 _image = png
         except (OSError, subprocess.SubprocessError) as exc:
             print('image render failed: %s' % exc, flush=True)
+        try:
+            board = agents_board.collect_board()
+            with _lock:
+                _board = board
+            png = html_to_png(agents_board.render_board(board, image_side=image_side(rotate)), rotate)
+            with _lock:
+                _board_image = png
+        except Exception as exc:
+            print('agent board failed: %s' % exc, flush=True)
         time.sleep(interval)
 
 
+def image_side(rotate):
+    return 'right' if rotate == 270 else 'left'
+
+
 def render_image(data, rotate):
-    """Screenshot the image-mode page with headless Chrome, rotate it for a
-    landscape Kindle and convert it to 8-bit grayscale for eips."""
+    return html_to_png(render_page(data, '', 0, image_side=image_side(rotate)), rotate)
+
+
+def html_to_png(page_html, rotate):
+    """Screenshot a page with headless Chrome, rotate it for a landscape Kindle
+    and convert it to 8-bit grayscale for eips."""
     if not os.path.exists(CHROME):
         raise OSError('Chrome not found: ' + CHROME)
     width, height = round(SCREEN_H / SCALE), round(SCREEN_W / SCALE)
     with tempfile.TemporaryDirectory(prefix='kindle_aimonitor_') as tmp:
         page, shot = os.path.join(tmp, 'dash.html'), os.path.join(tmp, 'dash.png')
         with open(page, 'w', encoding='utf-8') as f:
-            f.write(render_page(data, '', 0, image_side='right' if rotate == 270 else 'left'))
+            f.write(page_html)
         subprocess.run([CHROME, '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run',
                         '--user-data-dir=' + os.path.join(tmp, 'profile'),
                         '--window-size=%d,%d' % (width, height), '--force-device-scale-factor=%s' % SCALE,
@@ -247,7 +267,7 @@ def render_page(data, token, refresh, now=None, image_side=None):
     updated = hhmm(data.get('generatedAt')) if data else '—'
     if image_side:
         head = '<style>body{padding-%s:%dpx !important}</style>' % (image_side, round(STATUS_BAR / SCALE) + 12)
-        foot = '収集 %s ・ 1分ごとに更新 ・ 電源ボタンで終了' % updated
+        foot = '収集 %s ・ 通常5分ごとに更新 ・ 電源ボタンで終了' % updated
     else:
         head = '<meta http-equiv="refresh" content="%d;url=%s">' % (refresh, link)
         foot = '収集 %s ・ %d秒ごとに自動更新 ・ 時刻をタップで再読込' % (updated, refresh)
@@ -317,7 +337,7 @@ h2{font-size:17px;margin:2px 0 0;border-bottom:2px solid #000;padding:0 0 6px}
 
 class Handler(BaseHTTPRequestHandler):
     token = ''
-    refresh = 60
+    refresh = 300
 
     def do_GET(self):
         url = urlsplit(self.path)
@@ -325,23 +345,36 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(b'ok', 'text/plain')
         # The token goes in the path (/t/<token>): the Kindle's app:// launcher
         # mangles URLs that carry their own query string. ?k= stays for old bookmarks.
+        # /img/<token>.png is the usage dashboard, /img/<token>/agents.png the agent board.
         if url.path.startswith('/img/') and url.path.endswith('.png'):
-            if not hmac.compare_digest(url.path[5:-4].encode(), self.token.encode()):
+            given, _, view = url.path[5:-4].partition('/')
+            if not hmac.compare_digest(given.encode(), self.token.encode()):
                 return self.send_error(403, 'token required')
+            if view not in ('', 'agents'):
+                return self.send_error(404)
             with _lock:
-                png = _image
+                png = _board_image if view == 'agents' else _image
             if png is None:
                 return self.send_error(503, 'image not ready')
             return self.respond(png, 'image/png')
+        view = ''
         if url.path.startswith('/t/'):
-            given = url.path[3:]
+            given, _, view = url.path[3:].partition('/')
         elif url.path in ('/', '/index.html'):
             given = (parse_qs(url.query).get('k') or [''])[0]
         else:
             return self.send_error(404)
         if not hmac.compare_digest(given.encode(), self.token.encode()):
             return self.send_error(403, 'token required')
-        page = render_page(current_status(), self.token, self.refresh)
+        if view == 'agents':
+            import agents_board
+            with _lock:
+                board = _board
+            page = agents_board.render_board(board, self.token, self.refresh)
+        elif view:
+            return self.send_error(404)
+        else:
+            page = render_page(current_status(), self.token, self.refresh)
         self.respond(page.encode('utf-8'), 'text/html; charset=utf-8')
 
     def respond(self, body, content_type):
@@ -362,7 +395,7 @@ def main():
     parser = argparse.ArgumentParser(description='Kindle向けAIエージェント利用状況ダッシュボード')
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8766)
-    parser.add_argument('--refresh', type=int, default=60, help='収集と画面更新の秒数')
+    parser.add_argument('--refresh', type=int, default=300, help='収集と画面更新の秒数')
     parser.add_argument('--rotate', type=int, choices=(90, 270), default=270,
                         help='画像の回転。270=kindleロゴが左、90=ロゴが右')
     args = parser.parse_args()
